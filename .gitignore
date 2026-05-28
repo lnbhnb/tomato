@@ -1,0 +1,27 @@
+# Godot 4 generated files
+.godot/
+*.import
+*.uid
+
+# Export templates (too large)
+export_templates.zip
+
+# Godot engine binary (users should download themselves)
+godot_engine/
+
+# Godot zip download
+Godot_v4.4-stable_win64.exe.zip
+
+# Build output (exe)
+build/
+
+# Source image (large, optional)
+source_character.jpg
+source_character.jpg.import
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Qoder
+.qoder/

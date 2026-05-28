@@ -1,0 +1,15 @@
+[gd_scene load_steps=3 format=3 uid="uid://b7b8rmv7j1ewp"]
+
+[ext_resource type="Script" uid="uid://3gcvsmvgdu3x" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://1jm1f0a5ckfe" path="res://scripts/ui_panel.gd" id="2_ui"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main")
+
+[node name="UIPanel" type="PanelContainer" parent="."]
+offset_left = 220.0
+offset_top = 10.0
+offset_right = 470.0
+offset_bottom = 270.0
+z_index = 10
+script = ExtResource("2_ui")

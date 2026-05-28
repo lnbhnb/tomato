@@ -1,0 +1,6 @@
+@echo off
+echo Starting 修仙桌宠...
+"%~dp0godot_engine\Godot_v4.4-stable_win64_console.exe" --path "%~dp0."
+echo.
+echo 程序已退出，按任意键关闭...
+pause >nul
