@@ -329,33 +329,44 @@ func _load_anim_from_dir(frames: SpriteFrames, anim_name: String, dir_path: Stri
 	frames.set_animation_speed(anim_name, fps)
 	frames.set_animation_loop(anim_name, true)
 
-	var dir = DirAccess.open(dir_path)
-	if dir == null:
-		return
-
-	# Collect all PNG files and sort them
+	# 收集 .png 文件名（开发态走 DirAccess 扫描；打包后 PCK 里 DirAccess 可能扫不到原始 .png，
+	# 改按命名约定 01.png..16.png 探测 res:// 资源是否存在）
 	var files: Array[String] = []
-	dir.list_dir_begin()
-	var file_name = dir.get_next()
-	while file_name != "":
-		if not dir.current_is_dir() and file_name.to_lower().ends_with(".png"):
-			files.append(file_name)
-		file_name = dir.get_next()
-	dir.list_dir_end()
+	var dir = DirAccess.open(dir_path)
+	if dir != null:
+		dir.list_dir_begin()
+		var file_name = dir.get_next()
+		while file_name != "":
+			if not dir.current_is_dir() and file_name.to_lower().ends_with(".png"):
+				files.append(file_name)
+			file_name = dir.get_next()
+		dir.list_dir_end()
+	if files.is_empty():
+		for i in range(1, 17):
+			var fn := "%02d.png" % i
+			if ResourceLoader.exists(dir_path + "/" + fn):
+				files.append(fn)
 	files.sort()
 
-	# Load each frame using Image.load_from_file (bypasses Godot import system)
+	# 加载帧：优先走 ResourceLoader（打包后 .png 被导入为 .ctex），
+	# 回退到 Image.load（开发态未导入或 res:// 探测失败时）
 	for f in files:
 		var full_path = dir_path + "/" + f
-		# Convert res:// path to absolute path for Image.load_from_file
-		var abs_path = ProjectSettings.globalize_path(full_path)
-		var img = Image.new()
-		var err = img.load(abs_path)
-		if err == OK:
-			var tex = ImageTexture.create_from_image(img)
+		var tex: Texture2D = null
+		if ResourceLoader.exists(full_path):
+			var loaded = load(full_path)
+			if loaded is Texture2D:
+				tex = loaded
+		if tex == null:
+			var abs_path = ProjectSettings.globalize_path(full_path)
+			var img = Image.new()
+			var err = img.load(abs_path)
+			if err == OK:
+				tex = ImageTexture.create_from_image(img)
+		if tex != null:
 			frames.add_frame(anim_name, tex)
 		else:
-			_warn("无法加载: " + abs_path)
+			_warn("无法加载: " + full_path)
 
 	_log("加载 %s: %d 帧" % [anim_name, frames.get_frame_count(anim_name)])
 

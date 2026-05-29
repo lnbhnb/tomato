@@ -15,6 +15,9 @@ Godot_v4.4-stable_win64.exe.zip
 # Build output (exe)
 build/
 
+# 临时下载目录（如导出模板等大文件）
+_download/
+
 # Source image (large, optional)
 source_character.jpg
 source_character.jpg.import
