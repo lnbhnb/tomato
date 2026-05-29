@@ -14,6 +14,8 @@ signal pill_use_pressed(pill_id: String)
 signal export_save_pressed(abs_path: String)
 signal import_save_pressed(abs_path: String)
 signal reset_save_pressed
+signal custom_realms_save_pressed(character: String, names: Array)
+signal custom_realms_clear_pressed(character: String)
 
 var pomodoro_label: Label
 var focus_btn: Button
@@ -53,6 +55,13 @@ var pills_empty_label: Label
 var save_export_dialog: FileDialog
 var save_import_dialog: FileDialog
 var reset_confirm_dialog: ConfirmationDialog
+
+# 自定义境界名面板
+var realm_naming_panel: VBoxContainer
+var realm_naming_header: Label
+var realm_naming_edits: Array = []  # Array[LineEdit]
+var realm_naming_default_names: Array = []
+var realm_naming_current_character: String = ""
 
 var _focus_active: bool = false
 
@@ -167,6 +176,9 @@ func _build_ui():
 
 	# R-08 丹药背包
 	_add_pills_block(vbox)
+
+	# 境界名定制（按角色独立）
+	_add_realm_naming_block(vbox)
 
 	# R-05 修仙日志（统计 / 热力图 / 成就墙）
 	_add_stats_block(vbox)
@@ -816,3 +828,105 @@ func _on_import_pressed():
 func _on_reset_pressed():
 	if reset_confirm_dialog:
 		reset_confirm_dialog.popup_centered()
+
+
+# ─── 自定义境界名 ────────────────────────────────────────────────────────────
+func _add_realm_naming_block(parent: Control):
+	var toggle = _create_button(
+		"🏔️ 境界名定制", Color(0.35, 0.45, 0.4), Color(0.25, 0.35, 0.3)
+	)
+	toggle.custom_minimum_size = Vector2(170, 22)
+	toggle.add_theme_font_size_override("font_size", 10)
+	parent.add_child(toggle)
+
+	realm_naming_panel = VBoxContainer.new()
+	realm_naming_panel.add_theme_constant_override("separation", 2)
+	realm_naming_panel.visible = false
+	parent.add_child(realm_naming_panel)
+
+	realm_naming_header = Label.new()
+	realm_naming_header.text = "当前形象：-- （各形象独立保存）"
+	realm_naming_header.add_theme_font_size_override("font_size", 9)
+	realm_naming_header.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+	realm_naming_header.autowrap_mode = TextServer.AUTOWRAP_WORD
+	realm_naming_panel.add_child(realm_naming_header)
+
+	var tip := Label.new()
+	tip.text = "顺序从低到高填 9 阶名称；留空则走默认修仙境界"
+	tip.add_theme_font_size_override("font_size", 9)
+	tip.add_theme_color_override("font_color", Color(0.55, 0.6, 0.7))
+	tip.autowrap_mode = TextServer.AUTOWRAP_WORD
+	realm_naming_panel.add_child(tip)
+
+	realm_naming_edits.clear()
+	for i in range(9):
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		var lab := Label.new()
+		lab.text = "%d 阶" % (i + 1)
+		lab.add_theme_font_size_override("font_size", 9)
+		lab.add_theme_color_override("font_color", Color(0.75, 0.85, 1.0))
+		lab.custom_minimum_size = Vector2(28, 20)
+		row.add_child(lab)
+		var le := LineEdit.new()
+		le.add_theme_font_size_override("font_size", 9)
+		le.custom_minimum_size = Vector2(136, 20)
+		le.placeholder_text = ""
+		row.add_child(le)
+		realm_naming_edits.append(le)
+		realm_naming_panel.add_child(row)
+
+	var save_btn = _create_button("💾 保存到当前形象", Color(0.2, 0.5, 0.3), Color(0.15, 0.4, 0.22))
+	save_btn.custom_minimum_size = Vector2(170, 22)
+	save_btn.add_theme_font_size_override("font_size", 10)
+	save_btn.pressed.connect(_on_realm_naming_save)
+	realm_naming_panel.add_child(save_btn)
+
+	var clear_btn = _create_button("↺ 恢复默认修仙名", Color(0.4, 0.35, 0.25), Color(0.3, 0.25, 0.18))
+	clear_btn.custom_minimum_size = Vector2(170, 22)
+	clear_btn.add_theme_font_size_override("font_size", 10)
+	clear_btn.pressed.connect(_on_realm_naming_clear)
+	realm_naming_panel.add_child(clear_btn)
+
+	toggle.pressed.connect(func():
+		realm_naming_panel.visible = not realm_naming_panel.visible
+	)
+
+
+func set_realm_naming_for(character: String, names: Array, defaults: Array, is_custom: bool) -> void:
+	realm_naming_current_character = character
+	realm_naming_default_names = defaults.duplicate() if defaults != null else []
+	if realm_naming_header:
+		var tag: String = "已定制" if is_custom else "默认修仙名"
+		realm_naming_header.text = "当前形象：%s （%s）" % [character, tag]
+	for i in range(realm_naming_edits.size()):
+		var le: LineEdit = realm_naming_edits[i]
+		var default_str: String = str(defaults[i]) if i < defaults.size() else ""
+		le.placeholder_text = default_str
+		var shown: String = str(names[i]) if i < names.size() else default_str
+		# 默认名不填进输入框，走 placeholder；有自定义才填
+		if is_custom:
+			le.text = shown
+		else:
+			le.text = ""
+
+
+func _on_realm_naming_save():
+	var names: Array = []
+	for i in range(realm_naming_edits.size()):
+		var le: LineEdit = realm_naming_edits[i]
+		var t: String = le.text.strip_edges()
+		if t == "" and i < realm_naming_default_names.size():
+			t = str(realm_naming_default_names[i])
+		names.append(t)
+	if realm_naming_current_character == "":
+		show_message("未选中形象")
+		return
+	custom_realms_save_pressed.emit(realm_naming_current_character, names)
+
+
+func _on_realm_naming_clear():
+	if realm_naming_current_character == "":
+		show_message("未选中形象")
+		return
+	custom_realms_clear_pressed.emit(realm_naming_current_character)

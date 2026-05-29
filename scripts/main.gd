@@ -261,6 +261,10 @@ func switch_character(name: String) -> void:
 		ui_panel.update_character_label(name, idx, available_characters.size())
 		ui_panel.update_character_options(available_characters, name)
 		ui_panel.show_message("切换形象: %s (%d/%d)" % [name, idx + 1, available_characters.size()])
+	# 切角色后同步刷新走境界名 / UI / 定制面板
+	_push_realm_naming_to_ui()
+	_update_ui_status()
+	_refresh_stats()
 
 
 func cycle_character() -> void:
@@ -412,6 +416,11 @@ func _connect_signals():
 	ui_panel.import_save_pressed.connect(_on_import_save)
 	ui_panel.reset_save_pressed.connect(_on_reset_save)
 
+	# 自定义境界名
+	ui_panel.custom_realms_save_pressed.connect(_on_custom_realms_save)
+	ui_panel.custom_realms_clear_pressed.connect(_on_custom_realms_clear)
+	SaveManager.custom_realms_changed.connect(_on_custom_realms_changed)
+
 	# R-02 同步设置面板初始值
 	var f := int(SaveManager.get_setting("focus_min", 25))
 	var s := int(SaveManager.get_setting("short_break_min", 5))
@@ -448,6 +457,9 @@ func _connect_signals():
 
 	# R-08 初始背包刷新
 	_refresh_pills()
+
+	# 自定义境界名面板初始同步
+	_push_realm_naming_to_ui()
 
 	# R-10 启动自动备份（当日首次）
 	var bp: String = SaveManager.backup_today()
@@ -761,7 +773,7 @@ func _refresh_stats():
 		else threshold_now
 	)
 	ui_panel.update_stats(
-		str(d.get("realm", "练气")),
+		SaveManager.get_current_display_realm(),
 		int(d.get("total_exp", 0)),
 		threshold_now,
 		threshold_next,
@@ -780,30 +792,42 @@ func _on_achievement_unlocked(_id: String, title: String):
 
 
 func _on_realm_changed(new_realm: String):
-	ui_panel.show_message("突破成功! 当前境界: %s" % new_realm, 5.0)
+	var disp: String = _display_realm_for(new_realm)
+	ui_panel.show_message("突破成功! 当前境界: %s" % disp, 5.0)
 	if fx:
-		fx.play("恭喜道友突破至 %s" % new_realm)
+		fx.play("恭喜道友突破至 %s" % disp)
 
 
 func _on_tribulation_started(target_realm: String):
+	var disp: String = _display_realm_for(target_realm)
 	ui_panel.show_message(
-		"渡劫之期临! 须以一次完整闭关方可渡 %s 之劫" % target_realm,
+		"渡劫之期临! 须以一次完整闭关方可渡 %s 之劫" % disp,
 		6.0,
 	)
 	if fx:
-		fx.play("渡劫之期临 · %s" % target_realm, Color(0.6, 0.85, 1.0))
+		fx.play("渡劫之期临 · %s" % disp, Color(0.6, 0.85, 1.0))
 
 
 func _on_tribulation_failed(stay_realm: String):
-	ui_panel.show_message("走火入魔! %s 折修，本阶经验清零" % stay_realm, 6.0)
+	var disp: String = _display_realm_for(stay_realm)
+	ui_panel.show_message("走火入魔! %s 折修，本阶经验清零" % disp, 6.0)
 	if fx:
-		fx.play("渡劫失败 · %s" % stay_realm, Color(0.95, 0.35, 0.3))
+		fx.play("渡劫失败 · %s" % disp, Color(0.95, 0.35, 0.3))
+
+
+# 默认境界名 → 当前角色展示名
+func _display_realm_for(default_name: String) -> String:
+	var idx: int = SaveManager.REALMS.find(default_name)
+	if idx < 0:
+		return default_name
+	return SaveManager.get_display_realm_name(current_character, idx)
 
 
 func _update_ui_status():
 	var d = SaveManager.data
+	var disp: String = SaveManager.get_current_display_realm()
 	ui_panel.update_status(
-		d.get("realm", "练气"),
+		disp,
 		d.get("total_exp", 0),
 		d.get("body_strength", 0),
 		SaveManager.get_exp_to_next_realm()
@@ -812,9 +836,9 @@ func _update_ui_status():
 
 
 func _update_status_label_text():
-	var d = SaveManager.data
 	var state = state_machine.get_state_name() if state_machine else "IDLE"
-	status_label.text = "%s [%s]" % [d.get("realm", "练气"), state]
+	var disp: String = SaveManager.get_current_display_realm()
+	status_label.text = "%s [%s]" % [disp, state]
 
 
 # ─── R-07 双击台词 / 连点彩蛋 ────────────────────────────────────────────────
@@ -982,3 +1006,33 @@ func _on_save_imported():
 	_refresh_task_list()
 	_refresh_stats()
 	_refresh_pills()
+	_push_realm_naming_to_ui()
+
+
+# ─── 自定义境界名 ────────────────────────────────────────────────────────────────
+func _push_realm_naming_to_ui() -> void:
+	if not ui_panel:
+		return
+	var names: Array = SaveManager.get_realm_names_for(current_character)
+	var defaults: Array = SaveManager.REALMS.duplicate()
+	var is_custom: bool = SaveManager.has_custom_realms(current_character)
+	ui_panel.set_realm_naming_for(current_character, names, defaults, is_custom)
+
+
+func _on_custom_realms_save(character: String, names: Array):
+	if SaveManager.set_custom_realms(character, names):
+		ui_panel.show_message("境界名已保存·%s 形象专属" % character)
+	else:
+		ui_panel.show_message("保存失败·请检查输入")
+
+
+func _on_custom_realms_clear(character: String):
+	SaveManager.clear_custom_realms(character)
+	ui_panel.show_message("已恢复 %s 默认修仙境界名" % character)
+
+
+func _on_custom_realms_changed(character: String):
+	if character == current_character:
+		_push_realm_naming_to_ui()
+		_update_ui_status()
+		_refresh_stats()

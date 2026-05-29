@@ -9,6 +9,7 @@ signal achievement_unlocked(id: String, title: String)
 signal pill_dropped(id: String, name: String)
 signal pill_used(id: String, name: String)
 signal save_imported()
+signal custom_realms_changed(character: String)
 
 const REALMS = ["练气", "筑基", "金丹", "元婴", "化神", "炼虚", "合体", "大乘", "渡劫"]
 const REALM_THRESHOLDS = [0, 100, 300, 600, 1000, 1500, 2200, 3000, 4000]
@@ -100,6 +101,8 @@ func get_default_data() -> Dictionary:
 			"focus_exp_mult": 1.0,
 			"skip_next_break": false,
 		},
+		# 自定义境界名：{character_name: ["lv1", ..., "lv9"]}；缺省走 REALMS
+		"custom_realms": {},
 		"last_backup_date": "",
 		"last_save": "",
 	}
@@ -535,6 +538,66 @@ func use_pill(pid: String) -> bool:
 	data_changed.emit()
 	pill_used.emit(pid, str(info.get("name", pid)))
 	return true
+
+
+# ─── 自定义境界名（按角色独立） ───────────────────────────────────────────────
+
+func get_realm_names_for(character: String) -> Array:
+	var cr: Dictionary = data.get("custom_realms", {}) if typeof(data.get("custom_realms", {})) == TYPE_DICTIONARY else {}
+	var arr = cr.get(character, null)
+	if typeof(arr) == TYPE_ARRAY and arr.size() == REALMS.size():
+		var out: Array = []
+		for v in arr:
+			out.append(str(v))
+		return out
+	return REALMS.duplicate()
+
+
+func has_custom_realms(character: String) -> bool:
+	var cr: Dictionary = data.get("custom_realms", {}) if typeof(data.get("custom_realms", {})) == TYPE_DICTIONARY else {}
+	return cr.has(character)
+
+
+func get_display_realm_name(character: String, idx: int) -> String:
+	var names: Array = get_realm_names_for(character)
+	var i: int = clamp(idx, 0, names.size() - 1)
+	return str(names[i])
+
+
+func get_current_display_realm() -> String:
+	var ch: String = str(data.get("character", ""))
+	var idx: int = int(data.get("realm_index", 0))
+	return get_display_realm_name(ch, idx)
+
+
+func set_custom_realms(character: String, names: Array) -> bool:
+	if character == "":
+		return false
+	if names.size() != REALMS.size():
+		return false
+	var clean: Array = []
+	for i in range(REALMS.size()):
+		var s: String = str(names[i]).strip_edges()
+		if s == "":
+			s = REALMS[i]  # 空白回退默认
+		clean.append(s)
+	if not data.has("custom_realms") or typeof(data["custom_realms"]) != TYPE_DICTIONARY:
+		data["custom_realms"] = {}
+	data["custom_realms"][character] = clean
+	save_data()
+	custom_realms_changed.emit(character)
+	data_changed.emit()
+	return true
+
+
+func clear_custom_realms(character: String) -> void:
+	if not data.has("custom_realms") or typeof(data["custom_realms"]) != TYPE_DICTIONARY:
+		return
+	if data["custom_realms"].has(character):
+		data["custom_realms"].erase(character)
+		save_data()
+		custom_realms_changed.emit(character)
+		data_changed.emit()
 
 
 func consume_skip_break() -> bool:
