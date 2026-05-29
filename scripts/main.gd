@@ -1,5 +1,16 @@
 extends Node2D
 
+# ─── R-11 日志工具：统一加时间戳前缀 ───────────────────────────────────────────
+static func _ts() -> String:
+	var t := Time.get_time_dict_from_system()
+	return "%02d:%02d:%02d" % [int(t.hour), int(t.minute), int(t.second)]
+
+static func _log(msg: String) -> void:
+	print("[%s][修仙桌宠] %s" % [_ts(), msg])
+
+static func _warn(msg: String) -> void:
+	push_warning("[%s][修仙桌宠] %s" % [_ts(), msg])
+
 # ─── Subsystems ────────────────────────────────────────────────────────────────
 var state_machine: CharacterStateMachine
 var anim_controller: CharacterAnimController
@@ -201,7 +212,7 @@ func _scan_characters() -> Array[String]:
 			n = dir.get_next()
 		dir.list_dir_end()
 	list.append(BUILTIN_CHARACTER)
-	print("[修仙桌宠] 可用形象: ", list)
+	_log("可用形象: " + str(list))
 	return list
 
 
@@ -216,9 +227,9 @@ func _build_frames_for_character(name: String) -> SpriteFrames:
 	_load_anim_from_dir(frames, "focus", base + "/focus", 6)
 	_load_anim_from_dir(frames, "sleep", base + "/sleep", 5)
 	if frames.get_frame_count("idle") == 0:
-		push_warning("[修仙桌宠] 角色 %s 加载失败，回退到内置形象" % name)
+		_warn("角色 %s 加载失败，回退到内置形象" % name)
 		return SpriteGenerator.generate_all_frames()
-	print("[修仙桌宠] 加载形象: ", name)
+	_log("加载形象: " + str(name))
 	return frames
 
 
@@ -269,7 +280,7 @@ func _load_sprite_frames() -> SpriteFrames:
 	if has_custom:
 		return _load_custom_frames()
 	else:
-		print("[修仙桌宠] 未找到自定义素材，使用代码生成的像素小人")
+		_log("未找到自定义素材，使用代码生成的像素小人")
 		return SpriteGenerator.generate_all_frames()
 
 
@@ -305,7 +316,7 @@ func _load_custom_frames() -> SpriteFrames:
 		var fallback = SpriteGenerator.generate_all_frames()
 		return fallback
 
-	print("[修仙桌宠] 自定义素材加载完成!")
+	_log("自定义素材加载完成!")
 	return frames
 
 
@@ -340,9 +351,9 @@ func _load_anim_from_dir(frames: SpriteFrames, anim_name: String, dir_path: Stri
 			var tex = ImageTexture.create_from_image(img)
 			frames.add_frame(anim_name, tex)
 		else:
-			push_warning("[修仙桌宠] 无法加载: " + abs_path)
+			_warn("无法加载: " + abs_path)
 
-	print("[修仙桌宠] 加载 %s: %d 帧" % [anim_name, frames.get_frame_count(anim_name)])
+	_log("加载 %s: %d 帧" % [anim_name, frames.get_frame_count(anim_name)])
 
 
 func _build_status_label():
@@ -441,7 +452,7 @@ func _connect_signals():
 	# R-10 启动自动备份（当日首次）
 	var bp: String = SaveManager.backup_today()
 	if bp != "":
-		print("[修仙桌宠] 当日存档备份: ", bp)
+		_log("当日存档备份: " + str(bp))
 
 
 # ─── Input handling ────────────────────────────────────────────────────────────
@@ -817,11 +828,11 @@ func _load_dialogues() -> void:
 	f.close()
 	var json := JSON.new()
 	if json.parse(txt) != OK:
-		push_warning("[修仙桌宠] dialogues.json 解析失败")
+		_warn("dialogues.json 解析失败")
 		return
 	if typeof(json.data) == TYPE_DICTIONARY:
 		_dialogues = json.data
-		print("[修仙桌宠] 台词库已加载·%d 境界分桶" % _dialogues.size())
+		_log("台词库已加载·%d 境界分桶" % _dialogues.size())
 
 
 # 按当前境界×状态抽一句台词；未命中则回退 default。返回 "" 表示未加载台词库

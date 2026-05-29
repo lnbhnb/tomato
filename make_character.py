@@ -6,6 +6,7 @@
 用法:
     python make_character.py --source 照片.jpg --name 道长
     python make_character.py --source 全身照.jpg --name 剑仙 --crop full --sleep-pose sit
+    python make_character.py --source 新照片.jpg --name 道长 --state focus --force  # R-12 单态替换
     python make_character.py                       # 交互模式
 
 依赖:
@@ -17,6 +18,8 @@
     --crop square  居中裁最大正方形（不丢内容）
     --sleep-pose drift  默认走火入魔（歪头 + 漂浮 + ZZZ）
     --sleep-pose sit    盘腿打坐睡（蒲团 + 歪头 + 呼吸 + ZZZ）
+    --state idle/focus/sleep/all  仅生成指定状态帧（默认 all）
+    --no-preview                  跳过 preview.png 拼接大图（默认会输出）
 """
 
 import argparse
@@ -207,6 +210,49 @@ def generate_sleep_frames(base: Image.Image):
     return frames
 
 
+# ─── R-12 预览大图 ─────────────────────────────────────────────────────────────────
+def build_preview(out_dir: str) -> str:
+    """拼接 idle/focus/sleep 三行帧 → preview.png。返回输出路径（不存在返 ""）。"""
+    rows = []
+    max_cols = 0
+    for sub in ("idle", "focus", "sleep"):
+        sub_dir = os.path.join(out_dir, sub)
+        if not os.path.isdir(sub_dir):
+            continue
+        files = sorted(f for f in os.listdir(sub_dir) if f.lower().endswith(".png"))
+        if not files:
+            continue
+        imgs = [Image.open(os.path.join(sub_dir, fn)).convert("RGBA") for fn in files]
+        rows.append((sub, imgs))
+        max_cols = max(max_cols, len(imgs))
+    if not rows or max_cols == 0:
+        return ""
+
+    cell = SPRITE_SIZE
+    label_w = 64
+    canvas_w = label_w + cell * max_cols
+    canvas_h = cell * len(rows)
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (245, 245, 250, 255))
+    draw = ImageDraw.Draw(canvas)
+    for ri, (label, imgs) in enumerate(rows):
+        y0 = ri * cell
+        # 状态标签
+        draw.rectangle([0, y0, label_w, y0 + cell], fill=(60, 70, 90, 255))
+        draw.text((6, y0 + cell // 2 - 6), label.upper(), fill=(255, 255, 255, 255))
+        # 帧拼接
+        for ci, im in enumerate(imgs):
+            canvas.paste(im, (label_w + ci * cell, y0), im)
+        # 网格线
+        for ci in range(len(imgs) + 1):
+            x = label_w + ci * cell
+            draw.line([(x, y0), (x, y0 + cell)], fill=(200, 205, 215, 200), width=1)
+        draw.line([(0, y0 + cell - 1), (canvas_w, y0 + cell - 1)], fill=(200, 205, 215, 200), width=1)
+
+    out_path = os.path.join(out_dir, "preview.png")
+    canvas.save(out_path)
+    return out_path
+
+
 # ─── 输入校验 / 主流程 ─────────────────────────────────────────────────────────
 def sanitize_name(name: str) -> str:
     """只允许字母、数字、下划线、中文，避免文件系统问题。"""
@@ -228,6 +274,10 @@ def parse_args():
     p.add_argument("--sleep-pose", dest="sleep_pose",
                    choices=["drift", "sit"], default="drift",
                    help="睡眠姿势: drift=歪头漂浮(默认) / sit=盘腿打坐睡")
+    p.add_argument("--state", choices=["idle", "focus", "sleep", "all"], default="all",
+                   help="R-12: 只生成指定状态 (idle/focus/sleep)，默认 all 全量生成")
+    p.add_argument("--no-preview", dest="no_preview", action="store_true",
+                   help="R-12: 跳过 preview.png 拼接大图（默认会输出）")
     return p.parse_args()
 
 
@@ -253,14 +303,23 @@ def main():
         sys.exit(1)
 
     out_dir = os.path.join(CHARACTERS_DIR, name)
-    if os.path.exists(out_dir) and not args.force:
+    state = getattr(args, "state", "all")
+    is_partial = (state != "all")
+
+    if os.path.exists(out_dir) and not args.force and not is_partial:
         ans = input("角色 '%s' 已存在，覆盖? [y/N]: " % name).strip().lower()
         if ans != "y":
             print("已取消。")
             sys.exit(0)
+    elif is_partial and not os.path.exists(out_dir):
+        print("[错误] 角色 '%s' 不存在，--state 单态替换需先全量生成。" % name)
+        sys.exit(1)
 
     print("=" * 50)
-    print("  修仙桌宠 · 角色制作: %s" % name)
+    if is_partial:
+        print("  修仙桌宠 · 角色单态替换: %s [%s]" % (name, state))
+    else:
+        print("  修仙桌宠 · 角色制作: %s" % name)
     print("=" * 50)
 
     print("[1/5] 加载源图: %s  (裁剪模式: %s)" % (args.source, args.crop))
@@ -270,33 +329,54 @@ def main():
     print("[2/5] 像素化处理 ...")
     sprite = to_sprite(img)
 
-    for sub in ("idle", "focus", "sleep"):
+    targets = ["idle", "focus", "sleep"] if state == "all" else [state]
+    for sub in targets:
         os.makedirs(os.path.join(out_dir, sub), exist_ok=True)
 
-    print("[3/5] 生成 idle (%d 帧) ..." % IDLE_FRAMES)
-    for i, f in enumerate(generate_idle_frames(sprite)):
-        f.save(os.path.join(out_dir, "idle", "%02d.png" % (i + 1)))
+    total_frames = 0
+    if "idle" in targets:
+        print("[3/5] 生成 idle (%d 帧) ..." % IDLE_FRAMES)
+        for i, f in enumerate(generate_idle_frames(sprite)):
+            f.save(os.path.join(out_dir, "idle", "%02d.png" % (i + 1)))
+        total_frames += IDLE_FRAMES
 
-    print("[4/5] 生成 focus (%d 帧) ..." % FOCUS_FRAMES)
-    for i, f in enumerate(generate_focus_frames(sprite)):
-        f.save(os.path.join(out_dir, "focus", "%02d.png" % (i + 1)))
+    if "focus" in targets:
+        print("[4/5] 生成 focus (%d 帧) ..." % FOCUS_FRAMES)
+        for i, f in enumerate(generate_focus_frames(sprite)):
+            f.save(os.path.join(out_dir, "focus", "%02d.png" % (i + 1)))
+        total_frames += FOCUS_FRAMES
 
-    sleep_gen = generate_sleep_sit_frames if args.sleep_pose == "sit" else generate_sleep_frames
-    print("[5/5] 生成 sleep (%d 帧, 姿势=%s) ..." % (SLEEP_FRAMES, args.sleep_pose))
-    for i, f in enumerate(sleep_gen(sprite)):
-        f.save(os.path.join(out_dir, "sleep", "%02d.png" % (i + 1)))
+    if "sleep" in targets:
+        sleep_gen = generate_sleep_sit_frames if args.sleep_pose == "sit" else generate_sleep_frames
+        print("[5/5] 生成 sleep (%d 帧, 姿势=%s) ..." % (SLEEP_FRAMES, args.sleep_pose))
+        for i, f in enumerate(sleep_gen(sprite)):
+            f.save(os.path.join(out_dir, "sleep", "%02d.png" % (i + 1)))
+        total_frames += SLEEP_FRAMES
+
+    # R-12 拼接预览大图
+    preview_path = ""
+    if not getattr(args, "no_preview", False):
+        preview_path = build_preview(out_dir)
 
     rel = os.path.relpath(out_dir, ROOT)
     print()
     print("=" * 50)
-    print("  ✓ 完成! 共 %d 帧" % (IDLE_FRAMES + FOCUS_FRAMES + SLEEP_FRAMES))
+    if is_partial:
+        print("  ✓ 单态替换完成! 状态=%s, 帧数=%d" % (state, total_frames))
+    else:
+        print("  ✓ 完成! 共 %d 帧" % total_frames)
     print("  输出目录: %s" % rel)
+    if preview_path:
+        print("  预览大图: %s" % os.path.relpath(preview_path, ROOT))
     print("=" * 50)
     print()
-    print("下一步:")
-    print("  1. 双击 run.bat 启动桌宠")
-    print("  2. 右键弹出修仙面板 → 点击「切换形象」按钮循环切换")
-    print("     (新角色 '%s' 会自动出现在循环列表中)" % name)
+    if is_partial:
+        print("下一步: 重启桌宠，在设置面板切到形象 '%s' 即可看到新的 %s 帧。" % (name, state))
+    else:
+        print("下一步:")
+        print("  1. 双击 run.bat 启动桌宠")
+        print("  2. 右键弹出修仙面板 → 点击「切换形象」按钮循环切换")
+        print("     (新角色 '%s' 会自动出现在循环列表中)" % name)
 
 
 if __name__ == "__main__":

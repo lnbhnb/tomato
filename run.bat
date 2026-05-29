@@ -1,4 +1,6 @@
 @echo off
+chcp 65001 >nul
+title 修仙桌宠
 echo Starting 修仙桌宠...
 "%~dp0godot_engine\Godot_v4.4-stable_win64_console.exe" --path "%~dp0."
 echo.
