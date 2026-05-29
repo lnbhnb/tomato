@@ -10,6 +10,10 @@ signal switch_character_pressed
 signal character_selected(name: String)
 signal settings_changed(focus_min: int, short_min: int, long_min: int)
 signal pin_toggled(pinned: bool)
+signal pill_use_pressed(pill_id: String)
+signal export_save_pressed(abs_path: String)
+signal import_save_pressed(abs_path: String)
+signal reset_save_pressed
 
 var pomodoro_label: Label
 var focus_btn: Button
@@ -39,6 +43,16 @@ var stats_progress_bar: ProgressBar
 var stats_streak_label: Label
 var stats_heatmap: GridContainer
 var stats_achievements: VBoxContainer
+
+# R-08 丹药背包
+var pills_panel: VBoxContainer
+var pills_list: VBoxContainer
+var pills_empty_label: Label
+
+# R-10 存档文件对话框 + 重置二次确认
+var save_export_dialog: FileDialog
+var save_import_dialog: FileDialog
+var reset_confirm_dialog: ConfirmationDialog
 
 var _focus_active: bool = false
 
@@ -151,6 +165,9 @@ func _build_ui():
 	var sep3 = HSeparator.new()
 	vbox.add_child(sep3)
 
+	# R-08 丹药背包
+	_add_pills_block(vbox)
+
 	# R-05 修仙日志（统计 / 热力图 / 成就墙）
 	_add_stats_block(vbox)
 
@@ -234,6 +251,35 @@ func _add_settings_block(parent: Control):
 	apply_btn.add_theme_font_size_override("font_size", 10)
 	apply_btn.pressed.connect(_on_settings_apply)
 	settings_panel.add_child(apply_btn)
+
+	# R-10 存档导出 / 导入 / 重置
+	var save_sep := HSeparator.new()
+	settings_panel.add_child(save_sep)
+	var save_lab := Label.new()
+	save_lab.text = "存档"
+	save_lab.add_theme_font_size_override("font_size", 10)
+	save_lab.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+	settings_panel.add_child(save_lab)
+
+	var export_btn = _create_button("📤 导出存档", Color(0.25, 0.4, 0.55), Color(0.18, 0.3, 0.42))
+	export_btn.custom_minimum_size = Vector2(170, 22)
+	export_btn.add_theme_font_size_override("font_size", 10)
+	export_btn.pressed.connect(_on_export_pressed)
+	settings_panel.add_child(export_btn)
+
+	var import_btn = _create_button("📥 导入存档", Color(0.25, 0.4, 0.55), Color(0.18, 0.3, 0.42))
+	import_btn.custom_minimum_size = Vector2(170, 22)
+	import_btn.add_theme_font_size_override("font_size", 10)
+	import_btn.pressed.connect(_on_import_pressed)
+	settings_panel.add_child(import_btn)
+
+	var reset_btn = _create_button("⚠️ 重置存档", Color(0.55, 0.25, 0.25), Color(0.4, 0.18, 0.18))
+	reset_btn.custom_minimum_size = Vector2(170, 22)
+	reset_btn.add_theme_font_size_override("font_size", 10)
+	reset_btn.pressed.connect(_on_reset_pressed)
+	settings_panel.add_child(reset_btn)
+
+	_build_save_dialogs()
 
 	toggle.pressed.connect(func(): settings_panel.visible = not settings_panel.visible)
 
@@ -660,3 +706,113 @@ func reset_timer_display():
 	if settings_focus_spin:
 		minutes = int(settings_focus_spin.value)
 	pomodoro_label.text = "%02d:00" % minutes
+
+
+# ─── R-08 丹药背包 ────────────────────────────────────────────────────────────
+func _add_pills_block(parent: Control):
+	var toggle = _create_button(
+		"💊 丹药背包", Color(0.4, 0.3, 0.45), Color(0.3, 0.22, 0.35)
+	)
+	toggle.custom_minimum_size = Vector2(170, 22)
+	toggle.add_theme_font_size_override("font_size", 10)
+	parent.add_child(toggle)
+
+	pills_panel = VBoxContainer.new()
+	pills_panel.add_theme_constant_override("separation", 3)
+	pills_panel.visible = false
+	parent.add_child(pills_panel)
+
+	pills_empty_label = Label.new()
+	pills_empty_label.text = "背包空空如也·完成闭关有几率掎到丹药"
+	pills_empty_label.add_theme_font_size_override("font_size", 9)
+	pills_empty_label.add_theme_color_override("font_color", Color(0.55, 0.6, 0.7))
+	pills_empty_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	pills_panel.add_child(pills_empty_label)
+
+	pills_list = VBoxContainer.new()
+	pills_list.add_theme_constant_override("separation", 2)
+	pills_panel.add_child(pills_list)
+
+	toggle.pressed.connect(func(): pills_panel.visible = not pills_panel.visible)
+
+
+func update_inventory(inventory: Dictionary, pill_def: Dictionary) -> void:
+	if not pills_list:
+		return
+	for c in pills_list.get_children():
+		c.queue_free()
+	var any: bool = false
+	for pid in pill_def.keys():
+		var count: int = int(inventory.get(pid, 0))
+		if count <= 0:
+			continue
+		any = true
+		var info: Dictionary = pill_def[pid]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		var lab := Label.new()
+		lab.text = "%s ×%d\n%s" % [
+			str(info.get("name", pid)), count, str(info.get("desc", ""))
+		]
+		lab.add_theme_font_size_override("font_size", 9)
+		lab.add_theme_color_override("font_color", Color(0.85, 0.92, 1.0))
+		lab.custom_minimum_size = Vector2(118, 26)
+		lab.autowrap_mode = TextServer.AUTOWRAP_WORD
+		row.add_child(lab)
+		var use_btn = _create_button(
+			"服下", Color(0.3, 0.5, 0.35), Color(0.22, 0.4, 0.26)
+		)
+		use_btn.custom_minimum_size = Vector2(48, 26)
+		use_btn.add_theme_font_size_override("font_size", 9)
+		var pid_capture: String = str(pid)
+		use_btn.pressed.connect(func(): pill_use_pressed.emit(pid_capture))
+		row.add_child(use_btn)
+		pills_list.add_child(row)
+	if pills_empty_label:
+		pills_empty_label.visible = not any
+
+
+# ─── R-10 存档对话框 ─────────────────────────────────────────────────────────────
+func _build_save_dialogs():
+	save_export_dialog = FileDialog.new()
+	save_export_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	save_export_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	save_export_dialog.filters = PackedStringArray(["*.json ; 修仙存档"])
+	save_export_dialog.current_file = "tomato_save_%s.json" % Time.get_date_string_from_system()
+	save_export_dialog.size = Vector2i(560, 360)
+	save_export_dialog.file_selected.connect(func(p): export_save_pressed.emit(p))
+	add_child(save_export_dialog)
+
+	save_import_dialog = FileDialog.new()
+	save_import_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	save_import_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	save_import_dialog.filters = PackedStringArray(["*.json ; 修仙存档"])
+	save_import_dialog.size = Vector2i(560, 360)
+	save_import_dialog.file_selected.connect(func(p): import_save_pressed.emit(p))
+	add_child(save_import_dialog)
+
+	reset_confirm_dialog = ConfirmationDialog.new()
+	reset_confirm_dialog.title = "重置存档"
+	reset_confirm_dialog.dialog_text = "会清零全部进度·任务·丹药·成就，\n重置前会自动备份到 user://backups/_before_reset_*.json\n确定重置吗？"
+	reset_confirm_dialog.ok_button_text = "确认重置"
+	reset_confirm_dialog.cancel_button_text = "取消"
+	reset_confirm_dialog.confirmed.connect(func(): reset_save_pressed.emit())
+	add_child(reset_confirm_dialog)
+
+
+func _on_export_pressed():
+	if save_export_dialog:
+		save_export_dialog.current_file = (
+			"tomato_save_%s.json" % Time.get_date_string_from_system()
+		)
+		save_export_dialog.popup_centered()
+
+
+func _on_import_pressed():
+	if save_import_dialog:
+		save_import_dialog.popup_centered()
+
+
+func _on_reset_pressed():
+	if reset_confirm_dialog:
+		reset_confirm_dialog.popup_centered()

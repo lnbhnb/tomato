@@ -6,11 +6,40 @@ signal realm_changed(new_realm: String)
 signal tribulation_started(target_realm: String)
 signal tribulation_failed(stay_realm: String)
 signal achievement_unlocked(id: String, title: String)
+signal pill_dropped(id: String, name: String)
+signal pill_used(id: String, name: String)
+signal save_imported()
 
 const REALMS = ["练气", "筑基", "金丹", "元婴", "化神", "炼虚", "合体", "大乘", "渡劫"]
 const REALM_THRESHOLDS = [0, 100, 300, 600, 1000, 1500, 2200, 3000, 4000]
 const TRIBULATION_FROM_IDX = 2  # 金丹及以上需渡劫
 const SAVE_PATH = "user://save_data.json"
+const BACKUP_DIR = "user://backups"
+const BACKUP_KEEP_DAYS = 7
+
+# R-08 丹药定义：id → {name, desc, effect}
+# effect: focus_exp_mult / realm_progress / skip_break
+const PILL_DROP_RATE := 0.10  # 每次完整专注的掉落概率
+const PILLS := {
+	"ningshen": {
+		"name": "凝神丹",
+		"desc": "下一次闭关经验 ×1.5",
+		"effect": "focus_exp_mult",
+		"value": 1.5,
+	},
+	"pozhang": {
+		"name": "破障丹",
+		"desc": "当前境界进度 +20%",
+		"effect": "realm_progress",
+		"value": 0.2,
+	},
+	"bigu": {
+		"name": "辟谷丹",
+		"desc": "跳过下一次闭关回气",
+		"effect": "skip_break",
+		"value": 1,
+	},
+}
 
 const CYCLE_DAILY := "daily"
 const CYCLE_WEEKLY := "weekly"
@@ -66,6 +95,12 @@ func get_default_data() -> Dictionary:
 			"short_break_min": 5,
 			"long_break_min": 15,
 		},
+		"inventory": {},
+		"buffs": {
+			"focus_exp_mult": 1.0,
+			"skip_next_break": false,
+		},
+		"last_backup_date": "",
 		"last_save": "",
 	}
 
@@ -201,7 +236,14 @@ func complete_task(task_id: String) -> bool:
 func focus_completed():
 	data["focus_count"] += 1
 	data["focus_today"] = int(data.get("focus_today", 0)) + 1
-	add_exp(25)
+	# R-08 凝神丹 buff：下一次闭关经验 × mult（使用后消耗为 1.0）
+	var mult: float = float(_get_buff("focus_exp_mult", 1.0))
+	var gain: int = int(round(25.0 * mult))
+	add_exp(gain)
+	if mult != 1.0:
+		_set_buff("focus_exp_mult", 1.0)
+	# R-08 丹药随机掉落
+	try_drop_pill()
 	# R-05 成就触发
 	unlock_achievement("first_focus")
 	if int(data.get("focus_today", 0)) >= 8:
@@ -420,3 +462,189 @@ func unlock_achievement(id: String) -> bool:
 
 func is_achievement_unlocked(id: String) -> bool:
 	return data.get("achievements", {}).has(id)
+
+
+# ─── R-08 丹药 / Buff ─────────────────────────────────────────────────────
+
+func _get_buff(key: String, default_v):
+	var b: Dictionary = data.get("buffs", {})
+	return b.get(key, default_v)
+
+
+func _set_buff(key: String, value) -> void:
+	if not data.has("buffs") or typeof(data["buffs"]) != TYPE_DICTIONARY:
+		data["buffs"] = {}
+	data["buffs"][key] = value
+
+
+# 按概率掉落一颗丹药；返回掉落的 id，未掉落返 ""
+func try_drop_pill() -> String:
+	if randf() > PILL_DROP_RATE:
+		return ""
+	var ids: Array = PILLS.keys()
+	if ids.is_empty():
+		return ""
+	var pid: String = str(ids[randi() % ids.size()])
+	if not data.has("inventory") or typeof(data["inventory"]) != TYPE_DICTIONARY:
+		data["inventory"] = {}
+	var inv: Dictionary = data["inventory"]
+	inv[pid] = int(inv.get(pid, 0)) + 1
+	save_data()
+	data_changed.emit()
+	pill_dropped.emit(pid, str(PILLS[pid]["name"]))
+	return pid
+
+
+func get_pill_count(pid: String) -> int:
+	return int(data.get("inventory", {}).get(pid, 0))
+
+
+# 使用一颗丹药；返回是否成功
+func use_pill(pid: String) -> bool:
+	if not PILLS.has(pid):
+		return false
+	var count: int = get_pill_count(pid)
+	if count <= 0:
+		return false
+	var info: Dictionary = PILLS[pid]
+	var effect: String = str(info.get("effect", ""))
+	var value = info.get("value", 0)
+	match effect:
+		"focus_exp_mult":
+			_set_buff("focus_exp_mult", float(value))
+		"realm_progress":
+			# 当前阶段跨度 × value 加到 total_exp
+			var idx: int = int(data.get("realm_index", 0))
+			var cur_th: int = REALM_THRESHOLDS[idx] if idx < REALM_THRESHOLDS.size() else 0
+			var nxt_th: int = (
+				REALM_THRESHOLDS[idx + 1] if idx + 1 < REALM_THRESHOLDS.size() else cur_th
+			)
+			var span: int = max(nxt_th - cur_th, 0)
+			var bonus: int = int(round(float(span) * float(value)))
+			if bonus > 0:
+				data["total_exp"] = int(data.get("total_exp", 0)) + bonus
+				_check_realm_upgrade()
+		"skip_break":
+			_set_buff("skip_next_break", true)
+		_:
+			return false
+	data["inventory"][pid] = count - 1
+	if int(data["inventory"][pid]) <= 0:
+		data["inventory"].erase(pid)
+	save_data()
+	data_changed.emit()
+	pill_used.emit(pid, str(info.get("name", pid)))
+	return true
+
+
+func consume_skip_break() -> bool:
+	if bool(_get_buff("skip_next_break", false)):
+		_set_buff("skip_next_break", false)
+		save_data()
+		return true
+	return false
+
+
+# ─── R-10 存档备份 / 导入导出 / 重置 ────────────────────────────────────────
+
+func _ensure_backup_dir() -> void:
+	if not DirAccess.dir_exists_absolute(BACKUP_DIR):
+		DirAccess.make_dir_recursive_absolute(BACKUP_DIR)
+
+
+# 当日首次启动自动备份；保留最近 BACKUP_KEEP_DAYS 份
+func backup_today() -> String:
+	var today := _today_str()
+	if data.get("last_backup_date", "") == today:
+		return ""
+	_ensure_backup_dir()
+	var path: String = "%s/%s.json" % [BACKUP_DIR, today]
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return ""
+	f.store_string(JSON.stringify(data, "  "))
+	f.close()
+	data["last_backup_date"] = today
+	save_data()
+	_prune_old_backups()
+	return path
+
+
+func _prune_old_backups() -> void:
+	var dir := DirAccess.open(BACKUP_DIR)
+	if dir == null:
+		return
+	var files: Array[String] = []
+	dir.list_dir_begin()
+	var n := dir.get_next()
+	while n != "":
+		if not dir.current_is_dir() and n.ends_with(".json"):
+			files.append(n)
+		n = dir.get_next()
+	dir.list_dir_end()
+	files.sort()  # YYYY-MM-DD.json 字序即时序
+	while files.size() > BACKUP_KEEP_DAYS:
+		var oldest: String = files.pop_front()
+		DirAccess.remove_absolute("%s/%s" % [BACKUP_DIR, oldest])
+
+
+# 导出到任意路径
+func export_to_path(abs_path: String) -> bool:
+	var f := FileAccess.open(abs_path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_string(JSON.stringify(data, "  "))
+	f.close()
+	return true
+
+
+# 从任意路径导入；错误保留原数据不覆写
+func import_from_path(abs_path: String) -> bool:
+	if not FileAccess.file_exists(abs_path):
+		return false
+	var f := FileAccess.open(abs_path, FileAccess.READ)
+	if f == null:
+		return false
+	var txt: String = f.get_as_text()
+	f.close()
+	var json := JSON.new()
+	if json.parse(txt) != OK:
+		return false
+	var parsed = json.data
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return false
+	# 先自备份一份当前数据，避免导入出错丢失
+	_ensure_backup_dir()
+	var safety: String = "%s/_before_import_%d.json" % [
+		BACKUP_DIR, int(Time.get_unix_time_from_system())
+	]
+	var bf := FileAccess.open(safety, FileAccess.WRITE)
+	if bf:
+		bf.store_string(JSON.stringify(data, "  "))
+		bf.close()
+	data = parsed
+	_migrate_legacy_tasks()
+	var defaults := get_default_data()
+	for key in defaults:
+		if not data.has(key):
+			data[key] = defaults[key]
+	save_data()
+	save_imported.emit()
+	data_changed.emit()
+	return true
+
+
+# 重置为默认数据（调用前应由 UI 二次确认）
+func reset_all() -> void:
+	_ensure_backup_dir()
+	var safety: String = "%s/_before_reset_%d.json" % [
+		BACKUP_DIR, int(Time.get_unix_time_from_system())
+	]
+	var bf := FileAccess.open(safety, FileAccess.WRITE)
+	if bf:
+		bf.store_string(JSON.stringify(data, "  "))
+		bf.close()
+	data = get_default_data()
+	save_data()
+	save_imported.emit()
+	data_changed.emit()

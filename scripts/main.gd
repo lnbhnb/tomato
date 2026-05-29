@@ -30,8 +30,17 @@ const WIN_SIZE = Vector2i(480, 420)
 const BUILTIN_CHARACTER := "generated"
 const LEGACY_DIR := "res://assets/sprites"
 const CHARACTERS_DIR := "res://assets/characters"
+const DIALOGUE_PATH := "res://assets/dialogues.json"
 var available_characters: Array[String] = []
 var current_character: String = ""
+
+# R-07 双击台词 / 连点彩蛋
+var _dialogues: Dictionary = {}
+var _click_times: Array[int] = []  # ms timestamps
+var _easter_egg_cooldown_until: int = 0  # ms timestamp
+const CLICK_COMBO_WINDOW_MS := 5000
+const CLICK_COMBO_THRESHOLD := 5
+const EASTER_EGG_COOLDOWN_MS := 30000
 
 
 func _ready():
@@ -381,6 +390,17 @@ func _connect_signals():
 	# R-05 成就触发
 	SaveManager.achievement_unlocked.connect(_on_achievement_unlocked)
 
+	# R-08 丹药信号
+	SaveManager.pill_dropped.connect(_on_pill_dropped)
+	SaveManager.pill_used.connect(_on_pill_used)
+	SaveManager.save_imported.connect(_on_save_imported)
+
+	# R-08 / R-10 UI 信号
+	ui_panel.pill_use_pressed.connect(_on_pill_use)
+	ui_panel.export_save_pressed.connect(_on_export_save)
+	ui_panel.import_save_pressed.connect(_on_import_save)
+	ui_panel.reset_save_pressed.connect(_on_reset_save)
+
 	# R-02 同步设置面板初始值
 	var f := int(SaveManager.get_setting("focus_min", 25))
 	var s := int(SaveManager.get_setting("short_break_min", 5))
@@ -412,6 +432,17 @@ func _connect_signals():
 	# R-05 初始统计面板刷新
 	_refresh_stats()
 
+	# R-07 加载台词库
+	_load_dialogues()
+
+	# R-08 初始背包刷新
+	_refresh_pills()
+
+	# R-10 启动自动备份（当日首次）
+	var bp: String = SaveManager.backup_today()
+	if bp != "":
+		print("[修仙桌宠] 当日存档备份: ", bp)
+
 
 # ─── Input handling ────────────────────────────────────────────────────────────
 
@@ -423,6 +454,8 @@ func _on_area_input_event(_viewport, event, _shape_idx):
 			var win_pos = DisplayServer.window_get_position()
 			var mouse_pos = DisplayServer.mouse_get_position()
 			drag_offset = mouse_pos - win_pos
+			# R-07 双击台词 + 连点彩蛋
+			_register_click(event.double_click)
 
 
 func _input(event):
@@ -586,6 +619,11 @@ func _on_focus_completed():
 		SaveManager.confirm_breakthrough()
 		state_machine.go_idle()
 		return
+	# R-08 辟谷丹：跳过下一次休息
+	if SaveManager.consume_skip_break():
+		state_machine.go_idle()
+		ui_panel.show_message("辟谷丹生效·本次免去闭关回气")
+		return
 	# R-02 自动进入闭关回气（休息态）
 	var break_mode: String = pomodoro.start_next_break()
 	state_machine.go_sleep()
@@ -697,6 +735,7 @@ func _on_data_changed():
 	_update_ui_status()
 	_refresh_task_list()
 	_refresh_stats()
+	_refresh_pills()
 
 
 func _refresh_stats():
@@ -765,3 +804,170 @@ func _update_status_label_text():
 	var d = SaveManager.data
 	var state = state_machine.get_state_name() if state_machine else "IDLE"
 	status_label.text = "%s [%s]" % [d.get("realm", "练气"), state]
+
+
+# ─── R-07 双击台词 / 连点彩蛋 ────────────────────────────────────────────────
+func _load_dialogues() -> void:
+	if not FileAccess.file_exists(DIALOGUE_PATH):
+		return
+	var f := FileAccess.open(DIALOGUE_PATH, FileAccess.READ)
+	if f == null:
+		return
+	var txt: String = f.get_as_text()
+	f.close()
+	var json := JSON.new()
+	if json.parse(txt) != OK:
+		push_warning("[修仙桌宠] dialogues.json 解析失败")
+		return
+	if typeof(json.data) == TYPE_DICTIONARY:
+		_dialogues = json.data
+		print("[修仙桌宠] 台词库已加载·%d 境界分桶" % _dialogues.size())
+
+
+# 按当前境界×状态抽一句台词；未命中则回退 default。返回 "" 表示未加载台词库
+func _pick_dialogue_line() -> String:
+	if _dialogues.is_empty():
+		return ""
+	var realm: String = str(SaveManager.data.get("realm", "练气"))
+	var state_key: String
+	if SaveManager.is_in_tribulation():
+		state_key = "tribulation"
+	else:
+		var st := state_machine.get_state_name() if state_machine else "IDLE"
+		match st:
+			"FOCUS":
+				state_key = "focus"
+			"SLEEP":
+				state_key = "sleep"
+			_:
+				state_key = "idle"
+	var pool: Array = []
+	if _dialogues.has(realm) and typeof(_dialogues[realm]) == TYPE_DICTIONARY:
+		var by_state: Dictionary = _dialogues[realm]
+		if by_state.has(state_key) and typeof(by_state[state_key]) == TYPE_ARRAY:
+			pool = by_state[state_key]
+	if pool.is_empty() and _dialogues.has("default"):
+		var def_state: Dictionary = _dialogues.get("default", {})
+		if def_state.has(state_key) and typeof(def_state[state_key]) == TYPE_ARRAY:
+			pool = def_state[state_key]
+		elif def_state.has("idle") and typeof(def_state["idle"]) == TYPE_ARRAY:
+			pool = def_state["idle"]
+	if pool.is_empty():
+		return ""
+	return str(pool[randi() % pool.size()])
+
+
+func _register_click(is_double: bool) -> void:
+	var now_ms: int = Time.get_ticks_msec()
+	# 保留连点窗口内的点击
+	var window_start: int = now_ms - CLICK_COMBO_WINDOW_MS
+	while not _click_times.is_empty() and _click_times[0] < window_start:
+		_click_times.pop_front()
+	_click_times.append(now_ms)
+	# 连点彩蛋（优先于双击台词）
+	if _click_times.size() >= CLICK_COMBO_THRESHOLD and now_ms >= _easter_egg_cooldown_until:
+		_trigger_easter_egg()
+		_click_times.clear()
+		_easter_egg_cooldown_until = now_ms + EASTER_EGG_COOLDOWN_MS
+		return
+	if is_double:
+		_trigger_dialogue()
+
+
+func _trigger_dialogue() -> void:
+	var line: String = _pick_dialogue_line()
+	if line == "" or not ui_panel:
+		return
+	ui_panel.show_message(line, 3.5)
+
+
+func _trigger_easter_egg() -> void:
+	var line: String = "贫道道心动摇了！"
+	if _dialogues.has("easter_egg") and typeof(_dialogues["easter_egg"]) == TYPE_ARRAY:
+		var pool: Array = _dialogues["easter_egg"]
+		if not pool.is_empty():
+			line = str(pool[randi() % pool.size()])
+	if ui_panel:
+		ui_panel.show_message(line, 3.5)
+	_shake_sprite()
+
+
+# 拖头动画：水平小幅摇摆 0.6 秒
+func _shake_sprite() -> void:
+	if not is_instance_valid(animated_sprite):
+		return
+	var base: Vector2 = animated_sprite.position
+	var tw := create_tween()
+	tw.set_trans(Tween.TRANS_SINE)
+	for i in range(6):
+		var dx: float = 8.0 if i % 2 == 0 else -8.0
+		tw.tween_property(animated_sprite, "position", base + Vector2(dx, 0), 0.05)
+	tw.tween_property(animated_sprite, "position", base, 0.08)
+
+
+# ─── R-08 丹药 ────────────────────────────────────────────────────────────────
+func _refresh_pills():
+	if not ui_panel:
+		return
+	ui_panel.update_inventory(
+		SaveManager.data.get("inventory", {}),
+		SaveManager.PILLS,
+	)
+
+
+func _on_pill_dropped(_id: String, name: String):
+	if ui_panel:
+		ui_panel.show_message("掎到丹药：%s" % name, 4.0)
+	if fx:
+		fx.play("·丹药· %s" % name, Color(0.65, 1.0, 0.7))
+
+
+func _on_pill_used(_id: String, name: String):
+	if ui_panel:
+		ui_panel.show_message("%s 服下·药劲生效" % name, 3.0)
+
+
+func _on_pill_use(pill_id: String):
+	if not SaveManager.use_pill(pill_id):
+		if ui_panel:
+			ui_panel.show_message("无法服用此丹药")
+
+
+# ─── R-10 存档 导出 / 导入 / 重置 ─────────────────────────────────────────────────
+func _on_export_save(abs_path: String):
+	if SaveManager.export_to_path(abs_path):
+		ui_panel.show_message("存档已导出\n%s" % abs_path, 5.0)
+	else:
+		ui_panel.show_message("导出失败")
+
+
+func _on_import_save(abs_path: String):
+	if SaveManager.import_from_path(abs_path):
+		ui_panel.show_message("存档已导入·面板刷新\n%s" % abs_path, 5.0)
+	else:
+		ui_panel.show_message("导入失败·原存档未变")
+
+
+func _on_reset_save():
+	SaveManager.reset_all()
+	ui_panel.show_message("存档已重置·并备份原档", 5.0)
+
+
+func _on_save_imported():
+	# 从外部存档还原：全面刷新·形象可能变化
+	var saved: String = str(SaveManager.data.get("character", ""))
+	if saved != "" and saved in available_characters and saved != current_character:
+		switch_character(saved)
+	# 同步设置面板与定时器
+	var f := int(SaveManager.get_setting("focus_min", 25))
+	var s := int(SaveManager.get_setting("short_break_min", 5))
+	var l := int(SaveManager.get_setting("long_break_min", 15))
+	pomodoro.set_durations(float(f), float(s), float(l))
+	ui_panel.set_settings_values(f, s, l)
+	var pinned: bool = bool(SaveManager.get_setting("always_on_top", true))
+	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_ALWAYS_ON_TOP, pinned)
+	ui_panel.set_pin_state(pinned)
+	_update_ui_status()
+	_refresh_task_list()
+	_refresh_stats()
+	_refresh_pills()
