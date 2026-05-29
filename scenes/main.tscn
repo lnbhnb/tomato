@@ -10,6 +10,6 @@ script = ExtResource("1_main")
 offset_left = 220.0
 offset_top = 10.0
 offset_right = 470.0
-offset_bottom = 270.0
+offset_bottom = 410.0
 z_index = 10
 script = ExtResource("2_ui")
